@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PIN Letter Sorter</title>
+<style>
+/* Layout: single working column, three numbered steps down the page, results table at the foot */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --fg: #1c2230;
+  --muted: #5d6779;
+  --line: #d9dee7;
+  --accent: #1f5fa8;
+  --accent-fg: #ffffff;
+  --ok: #1d7a46;  --ok-bg: #e3f3ea;
+  --warn: #8a5a00; --warn-bg: #fdf0d5;
+  --bad: #a3262a;  --bad-bg: #fbe4e4;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161d; --panel: #1a2029; --fg: #e6e9ef; --muted: #9aa4b5; --line: #2c3442;
+    --accent: #6fa8ec; --accent-fg: #0d1520;
+    --ok: #7fd3a1; --ok-bg: #173323; --warn: #f0c46a; --warn-bg: #3a2e12; --bad: #f19a9a; --bad-bg: #3d1a1c;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); }
+main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 20px; }
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 62ch; }
+.privacy { display: inline-block; margin-top: 10px; font-size: 0.85rem; padding: 4px 10px; border-radius: 999px; background: var(--ok-bg); color: var(--ok); }
+.step { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 10px; }
+.step h2 { margin: 0; font-size: 1rem; display: flex; gap: 10px; align-items: baseline; }
+.step h2 span { font: 600 0.8rem var(--mono); color: var(--accent); }
+.hint { margin: 0; color: var(--muted); font-size: 0.88rem; }
+textarea { width: 100%; min-height: 180px; font: 0.9rem/1.45 var(--mono); padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); resize: vertical; }
+input[type=text], input[type=number] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+input[type=number] { width: 4.5em; }
+.row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.row label { display: flex; gap: 8px; align-items: center; }
+button { font: 600 0.95rem var(--font); padding: 9px 16px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#fileList { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 0.9rem; }
+#fileList li { display: flex; justify-content: space-between; gap: 12px; }
+#fileList .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tally { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-size: 0.85rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.ok { background: var(--ok-bg); color: var(--ok); }
+.check { background: var(--warn-bg); color: var(--warn); }
+.missing { background: var(--bad-bg); color: var(--bad); }
+.neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+td.pages { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+td .note { display: block; font-size: 0.8rem; color: var(--warn); }
+.msg { margin: 0; font-size: 0.9rem; }
+.msg.err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>PIN Letter Sorter</h1>
+    <p>Match HSC minimum standards PIN letters to a class roll, then save that class's letters as one printable PDF, in roll order.</p>
+    <span class="privacy">Runs on this computer only. Nothing is uploaded.</span>
+  </header>
+
+  <section class="step">
+    <h2><span>1</span>PIN letter PDFs</h2>
+    <input type="file" id="pdfs" accept="application/pdf" multiple>
+    <p class="hint">Select all three PDFs at once (Ctrl/Cmd-click).</p>
+    <ul id="fileList"></ul>
+  </section>
+
+  <section class="step">
+    <h2><span>2</span>Class roll</h2>
+    <textarea id="roll" spellcheck="false" placeholder="One student per line, either order:
+SMITH, John
+Anh Nguyen
+Tran, Minh Khoa   445566778"></textarea>
+    <p class="hint">Paste names only, one per line. A NESA student number on the line (if the letters show it) gives the most reliable match. Remove class codes and other columns.</p>
+    <div class="row">
+      <label for="cls">Class <input type="text" id="cls" placeholder="12ENS1" size="10"></label>
+      <label for="ppl">Pages per letter <input type="number" id="ppl" min="1" max="10" value="1"></label>
+      <label for="incl"><input type="checkbox" id="incl" checked> Include flagged matches</label>
+    </div>
+  </section>
+
+  <section class="step">
+    <h2><span>3</span>Match and save</h2>
+    <div class="row">
+      <button id="run" disabled>Match letters</button>
+      <button id="save" class="ghost" disabled>Save PDF</button>
+      <button id="openTab" class="ghost" disabled>Open PDF in new tab</button>
+    </div>
+    <p class="msg" id="msg">Load the PDFs and paste the roll to begin.</p>
+    <div id="results" hidden>
+      <div class="tally" id="tally"></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Student</th><th>Status</th><th>Letter pages</th></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="row" id="missingRow" hidden>
+        <button class="ghost" id="copyMissing">Copy list of students with no letter</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const $ = id => document.getElementById(id);
+let files = [];      // {name, bytes, pages: [Set of tokens], blank}
+let results = [];    // per student
+let outBlob = null;
+
+function norm(s) {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/['’`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+$('pdfs').addEventListener('change', async e => {
+  files = []; results = []; outBlob = null;
+  $('results').hidden = true; $('save').disabled = $('openTab').disabled = true;
+  const list = $('fileList'); list.innerHTML = '';
+  const chosen = [...e.target.files];
+  for (const f of chosen) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>${esc(f.name)}</span><span class="n">reading…</span>`;
+    list.appendChild(li);
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+      const pages = []; let blank = 0;
+      for (let i = 1; i <= doc.numPages; i++) {
+        const tc = await (await doc.getPage(i)).getTextContent();
+        const text = norm(tc.items.map(it => it.str).join(' '));
+        if (!text) blank++;
+        pages.push(new Set(text.split(' ')));
+      }
+      files.push({ name: f.name, bytes, pages, blank });
+      li.querySelector('.n').textContent = `${doc.numPages} pages` +
+        (blank === doc.numPages ? ' · no text found, may be scanned' : blank ? ` · ${blank} without text` : '');
+    } catch (err) {
+      li.querySelector('.n').textContent = 'could not read this file';
+    }
+  }
+  updateRunState();
+});
+$('roll').addEventListener('input', updateRunState);
+
+function updateRunState() {
+  $('run').disabled = !(files.length && $('roll').value.trim());
+  if (files.length && !$('roll').value.trim()) $('msg').textContent = 'Now paste the class roll.';
+  else if (!files.length) $('msg').textContent = 'Load the PDFs and paste the roll to begin.';
+  else $('msg').textContent = 'Ready to match.';
+}
+
+function parseRoll(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const toks = norm(line).split(' ').filter(Boolean);
+    const id = toks.find(t => /^\d{6,12}$/.test(t)) || null;
+    const name = toks.filter(t => /^[a-z]+$/.test(t));
+    if (!id && /\b(surname|first ?name|given|student|name)\b/i.test(line) && out.length === 0) continue; // header row
+    if (!id && !name.length) continue;
+    out.push({ display: line.replace(/\s+/g, ' '), id, name });
+  }
+  return out;
+}
+
+$('run').addEventListener('click', () => {
+  const roll = parseRoll($('roll').value);
+  const ppl = Math.max(1, parseInt($('ppl').value, 10) || 1);
+  const all = [];
+  files.forEach((f, fi) => f.pages.forEach((tokens, pi) => all.push({ fi, pi, tokens })));
+
+  results = roll.map(st => {
+    let cands = [], partial = false, notes = [];
+    if (st.id) cands = all.filter(p => p.tokens.has(st.id));
+    if (!cands.length && st.name.length) {
+      cands = all.filter(p => st.name.every(t => p.tokens.has(t)));
+      if (!cands.length && st.name.length >= 3) {
+        cands = all.filter(p => st.name.filter(t => p.tokens.has(t)).length >= st.name.length - 1);
+        if (cands.length) { partial = true; notes.push('matched without one name part'); }
+      }
+      if (cands.length && st.name.length === 1) { partial = true; notes.push('only one name to match on'); }
+    }
+    // collapse consecutive hits into letters of ppl pages
+    const letters = [];
+    for (const c of cands) {
+      const last = letters[letters.length - 1];
+      if (last && last.fi === c.fi && c.pi <= last.start + ppl - 1) continue;
+      const n = files[c.fi].pages.length;
+      letters.push({ fi: c.fi, start: c.pi, end: Math.min(c.pi + ppl - 1, n - 1) });
+    }
+    if (letters.length > 1) notes.push(`${letters.length} letters found`);
+    return { ...st, letters, notes, status: !letters.length ? 'missing' : (partial || letters.length > 1) ? 'check' : 'ok' };
+  });
+
+  // pages claimed by more than one student
+  const claim = new Map();
+  results.forEach((r, ri) => r.letters.forEach(l => {
+    for (let p = l.start; p <= l.end; p++) {
+      const k = l.fi + ':' + p;
+      if (!claim.has(k)) claim.set(k, new Set());
+      claim.get(k).add(ri);
+    }
+  }));
+  for (const set of claim.values()) if (set.size > 1) {
+    const ids = [...set];
+    ids.forEach(ri => {
+      const others = ids.filter(o => o !== ri).map(o => results[o].display);
+      const note = 'same page as ' + others.join(', ');
+      if (!results[ri].notes.includes(note)) results[ri].notes.push(note);
+      results[ri].status = 'check';
+    });
+  }
+
+  const totalPages = all.length;
+  const unclaimed = totalPages - claim.size;
+  render(unclaimed);
+  buildPdf();
+});
+
+function render(unclaimed) {
+  const c = s => results.filter(r => r.status === s).length;
+  $('tally').innerHTML =
+    `<span class="chip ok">${c('ok')} matched</span>` +
+    `<span class="chip check">${c('check')} to check</span>` +
+    `<span class="chip missing">${c('missing')} no letter</span>` +
+    `<span class="chip neutral">${unclaimed} pages not on this roll</span>`;
+  const label = { ok: 'Matched', check: 'Check', missing: 'No letter' };
+  $('tbody').innerHTML = results.map(r => `<tr>
+    <td>${esc(r.display)}${r.notes.length ? `<span class="note">${esc(r.notes.join('; '))}</span>` : ''}</td>
+    <td><span class="chip ${r.status}">${label[r.status]}</span></td>
+    <td class="pages">${r.letters.map(l => esc(files[l.fi].name) + ' p' + (l.start + 1) + (l.end > l.start ? '–' + (l.end + 1) : '')).join('<br>') || '—'}</td>
+  </tr>`).join('');
+  $('missingRow').hidden = !c('missing');
+  $('results').hidden = false;
+}
+
+async function buildPdf() {
+  outBlob = null; $('save').disabled = $('openTab').disabled = true;
+  const incl = $('incl').checked;
+  const chosen = results.filter(r => r.status === 'ok' || (incl && r.status === 'check'));
+  if (!chosen.length) { $('msg').textContent = 'No letters matched, so there is nothing to save. Check the roll format and the pages-per-letter setting.'; return; }
+  $('msg').textContent = 'Building PDF…';
+  try {
+    const out = await PDFLib.PDFDocument.create();
+    const src = {};
+    const seen = new Set();
+    for (const r of chosen) for (const l of r.letters) {
+      const idx = [];
+      for (let p = l.start; p <= l.end; p++) { const k = l.fi + ':' + p; if (!seen.has(k)) { seen.add(k); idx.push(p); } }
+      if (!idx.length) continue;
+      src[l.fi] ||= await PDFLib.PDFDocument.load(files[l.fi].bytes, { ignoreEncryption: true });
+      (await out.copyPages(src[l.fi], idx)).forEach(pg => out.addPage(pg));
+    }
+    outBlob = new Blob([await out.save()], { type: 'application/pdf' });
+    $('save').disabled = $('openTab').disabled = false;
+    $('msg').textContent = `PDF ready: ${out.getPageCount()} pages for ${chosen.length} students, in roll order.`;
+    $('msg').className = 'msg';
+  } catch (err) {
+    $('msg').textContent = 'Could not build the PDF: ' + err.message;
+    $('msg').className = 'msg err';
+  }
+}
+$('incl').addEventListener('change', () => { if (results.length) buildPdf(); });
+
+$('save').addEventListener('click', () => {
+  if (!outBlob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(outBlob);
+  a.download = `PIN letters ${$('cls').value.trim() || 'class'}.pdf`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+$('openTab').addEventListener('click', () => { if (outBlob) window.open(URL.createObjectURL(outBlob), '_blank'); });
+
+$('copyMissing').addEventListener('click', async () => {
+  const txt = results.filter(r => r.status === 'missing').map(r => r.display).join('\n');
+  try { await navigator.clipboard.writeText(txt); $('msg').textContent = 'Copied the names with no letter.'; }
+  catch { $('msg').textContent = 'Copy failed. Names with no letter: ' + txt.replace(/\n/g, ', '); }
+});
+</script>
+</body>
+</html>
