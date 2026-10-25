@@ -56,7 +56,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .ok { background: var(--ok-bg); color: var(--ok); }
 .check { background: var(--warn-bg); color: var(--warn); }
 .missing { background: var(--bad-bg); color: var(--bad); }
-.neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.neutral, .notneeded { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -97,7 +97,18 @@ Tran, Minh Khoa   445566778"></textarea>
   </section>
 
   <section class="step">
-    <h2><span>3</span>Match and save</h2>
+    <h2><span>3</span>Minimum standards cross check (optional)</h2>
+    <input type="file" id="msFile" accept=".csv,.txt,text/csv,text/tab-separated-values">
+    <p class="hint">The NESA results CSV with NESA Student Id, Family Name, Given Name/s and the READING, WRITING and NUMERACY Minimum Standard Met columns. Each student is checked against it: who still needs which online test, who needs a test but has no letter, and who has a letter but has already met all three. Roll names without a NESA number pick up their number from the CSV for a more reliable letter match.</p>
+    <div class="row">
+      <label for="excl"><input type="checkbox" id="excl" checked> Leave out letters for students who have met all three standards</label>
+      <button class="ghost" id="msClear" hidden>Remove CSV</button>
+    </div>
+    <p class="msg" id="msMsg"></p>
+  </section>
+
+  <section class="step">
+    <h2><span>4</span>Match and save</h2>
     <div class="row">
       <button id="run" disabled>Match letters</button>
       <button id="save" class="ghost" disabled>Save PDF</button>
@@ -108,7 +119,7 @@ Tran, Minh Khoa   445566778"></textarea>
       <div class="tally" id="tally"></div>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Student</th><th>Status</th><th>Letter pages</th></tr></thead>
+          <thead id="thead"></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
@@ -128,6 +139,8 @@ const $ = id => document.getElementById(id);
 let files = [];      // {name, bytes, pages: [Set of tokens], blank}
 let results = [];    // per student
 let outBlob = null;
+let ms = null;       // minimum standards CSV: {rows, byId}
+const TESTS = ['Reading', 'Writing', 'Numeracy'];
 
 function norm(s) {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
@@ -172,6 +185,98 @@ function updateRunState() {
   else $('msg').textContent = 'Ready to match.';
 }
 
+// Comma or tab separated, with quoted fields
+function parseDelimited(text) {
+  text = text.replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0];
+  const delim = (first.split('\t').length > first.split(',').length) ? '\t' : ',';
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+      else f += c;
+    } else if (c === '"') q = true;
+    else if (c === delim) { row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(f); rows.push(row); row = []; f = '';
+    } else f += c;
+  }
+  if (f || row.length) { row.push(f); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim()));
+}
+
+function parseMs(text) {
+  const rows = parseDelimited(text);
+  const hi = rows.findIndex(r => r.some(c => /reading/i.test(c)) && r.some(c => /numeracy/i.test(c)));
+  if (hi < 0) throw new Error('no READING / WRITING / NUMERACY header row found');
+  const head = rows[hi].map(c => c.toLowerCase());
+  const col = re => head.findIndex(c => re.test(c));
+  const ci = {
+    id: col(/nesa|student (id|number)/), family: col(/family|surname|last name/), given: col(/given|first name/),
+    Reading: col(/reading/), Writing: col(/writing/), Numeracy: col(/numeracy/),
+  };
+  const absent = Object.keys(ci).filter(k => ci[k] < 0);
+  if (absent.length) throw new Error('missing column(s): ' + absent.join(', '));
+  const out = [], byId = new Map();
+  for (const r of rows.slice(hi + 1)) {
+    const cell = k => (r[ci[k]] || '').trim();
+    const id = cell('id').replace(/\D/g, '') || null;
+    const tests = {};
+    for (const t of TESTS) {
+      const raw = cell(t);
+      tests[t] = { raw, state: /^y(es)?$/i.test(raw) ? 'met' : /needed/i.test(raw) ? 'needed' : 'unknown' };
+    }
+    const row = {
+      id, name: `${cell('family')}, ${cell('given')}`,
+      tokens: new Set(norm(cell('family') + ' ' + cell('given')).split(' ').filter(Boolean)), tests,
+    };
+    if (!id && !row.tokens.size) continue;
+    out.push(row);
+    if (id) byId.set(id, row);
+  }
+  return { rows: out, byId };
+}
+
+// Find a roll student in the CSV: by NESA number, else by a unique full-name match
+function lookupMs(st) {
+  if (st.id && ms.byId.has(st.id)) return { row: ms.byId.get(st.id) };
+  if (st.name.length < 2) return { note: 'not found in the minimum standards CSV (add a NESA number or full name to the roll)' };
+  const hits = ms.rows.filter(r => st.name.every(t => r.tokens.has(t)));
+  if (hits.length > 1) return { note: `${hits.length} students in the minimum standards CSV share this name` };
+  if (!hits.length) return { note: 'not found in the minimum standards CSV' };
+  const row = hits[0];
+  if (st.id && row.id && row.id !== st.id) return { row, note: `NESA number on the roll differs from the CSV (${row.id})` };
+  return { row };
+}
+
+$('msFile').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  ms = null;
+  if (f) {
+    try {
+      ms = parseMs(await f.text());
+      if (!ms.rows.length) throw new Error('no student rows found');
+      const need = ms.rows.filter(r => TESTS.some(t => r.tests[t].state === 'needed')).length;
+      $('msMsg').textContent = `${ms.rows.length} students read; ${need} still ${need === 1 ? "needs" : "need"} at least one online test.`;
+      $('msMsg').className = 'msg';
+    } catch (err) {
+      ms = null;
+      $('msMsg').textContent = 'Could not read this CSV: ' + err.message;
+      $('msMsg').className = 'msg err';
+    }
+  } else $('msMsg').textContent = '';
+  $('msClear').hidden = !ms;
+  if (results.length) match();
+});
+$('msClear').addEventListener('click', () => {
+  $('msFile').value = ''; ms = null;
+  $('msMsg').textContent = ''; $('msClear').hidden = true;
+  if (results.length) match();
+});
+$('excl').addEventListener('change', () => { if (results.length && ms) match(); });
+
 function parseRoll(text) {
   const out = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -187,15 +292,25 @@ function parseRoll(text) {
   return out;
 }
 
-$('run').addEventListener('click', () => {
+$('run').addEventListener('click', () => match());
+
+function match() {
   const roll = parseRoll($('roll').value);
+  const excl = $('excl').checked;
   const ppl = Math.max(1, parseInt($('ppl').value, 10) || 1);
   const all = [];
   files.forEach((f, fi) => f.pages.forEach((tokens, pi) => all.push({ fi, pi, tokens })));
 
   results = roll.map(st => {
     let cands = [], partial = false, notes = [];
-    if (st.id) cands = all.filter(p => p.tokens.has(st.id));
+    let msRow = null;
+    if (ms) {
+      const m = lookupMs(st);
+      msRow = m.row || null;
+      if (m.note) notes.push(m.note);
+    }
+    const id = st.id || (msRow && msRow.id);
+    if (id) cands = all.filter(p => p.tokens.has(id));
     if (!cands.length && st.name.length) {
       cands = all.filter(p => st.name.every(t => p.tokens.has(t)));
       if (!cands.length && st.name.length >= 3) {
@@ -213,7 +328,20 @@ $('run').addEventListener('click', () => {
       letters.push({ fi: c.fi, start: c.pi, end: Math.min(c.pi + ppl - 1, n - 1) });
     }
     if (letters.length > 1) notes.push(`${letters.length} letters found`);
-    return { ...st, letters, notes, status: !letters.length ? 'missing' : (partial || letters.length > 1) ? 'check' : 'ok' };
+    let status = !letters.length ? 'missing' : (partial || letters.length > 1) ? 'check' : 'ok';
+    let need = null, allMet = false;
+    if (msRow) {
+      need = TESTS.filter(t => msRow.tests[t].state === 'needed');
+      const odd = TESTS.filter(t => msRow.tests[t].state === 'unknown');
+      if (odd.length) notes.push('unrecognised CSV value: ' + odd.map(t => `${t} "${msRow.tests[t].raw}"`).join(', '));
+      allMet = !need.length && !odd.length;
+      if (allMet && letters.length) {
+        status = 'check';
+        notes.push('has met all three standards, so this letter is not needed' + (excl ? '; left out of the PDF' : ''));
+      } else if (allMet) status = 'notneeded';
+      else if (!letters.length && need.length) notes.push('still needs ' + need.join(', ') + ' but no letter was found');
+    }
+    return { ...st, msRow, need, allMet, letters, notes, status };
   });
 
   // pages claimed by more than one student
@@ -239,7 +367,7 @@ $('run').addEventListener('click', () => {
   const unclaimed = totalPages - claim.size;
   render(unclaimed);
   buildPdf();
-});
+}
 
 function render(unclaimed) {
   const c = s => results.filter(r => r.status === s).length;
@@ -247,11 +375,15 @@ function render(unclaimed) {
     `<span class="chip ok">${c('ok')} matched</span>` +
     `<span class="chip check">${c('check')} to check</span>` +
     `<span class="chip missing">${c('missing')} no letter</span>` +
+    (c('notneeded') ? `<span class="chip neutral">${c('notneeded')} all standards met, no letter needed</span>` : '') +
     `<span class="chip neutral">${unclaimed} pages not on this roll</span>`;
-  const label = { ok: 'Matched', check: 'Check', missing: 'No letter' };
+  const label = { ok: 'Matched', check: 'Check', missing: 'No letter', notneeded: 'Not needed' };
+  const testsCell = r => !r.msRow ? 'Not in CSV' : r.need.length ? r.need.join(', ') : r.allMet ? 'None, all met' : '—';
+  $('thead').innerHTML = `<tr><th>Student</th><th>Status</th>${ms ? '<th>Tests needed</th>' : ''}<th>Letter pages</th></tr>`;
   $('tbody').innerHTML = results.map(r => `<tr>
     <td>${esc(r.display)}${r.notes.length ? `<span class="note">${esc(r.notes.join('; '))}</span>` : ''}</td>
     <td><span class="chip ${r.status}">${label[r.status]}</span></td>
+    ${ms ? `<td>${esc(testsCell(r))}</td>` : ''}
     <td class="pages">${r.letters.map(l => esc(files[l.fi].name) + ' p' + (l.start + 1) + (l.end > l.start ? '–' + (l.end + 1) : '')).join('<br>') || '—'}</td>
   </tr>`).join('');
   $('missingRow').hidden = !c('missing');
@@ -261,7 +393,8 @@ function render(unclaimed) {
 async function buildPdf() {
   outBlob = null; $('save').disabled = $('openTab').disabled = true;
   const incl = $('incl').checked;
-  const chosen = results.filter(r => r.status === 'ok' || (incl && r.status === 'check'));
+  const excl = ms && $('excl').checked;
+  const chosen = results.filter(r => (r.status === 'ok' || (incl && r.status === 'check')) && !(excl && r.allMet));
   if (!chosen.length) { $('msg').textContent = 'No letters matched, so there is nothing to save. Check the roll format and the pages-per-letter setting.'; return; }
   $('msg').textContent = 'Building PDF…';
   try {
@@ -296,7 +429,8 @@ $('save').addEventListener('click', () => {
 $('openTab').addEventListener('click', () => { if (outBlob) window.open(URL.createObjectURL(outBlob), '_blank'); });
 
 $('copyMissing').addEventListener('click', async () => {
-  const txt = results.filter(r => r.status === 'missing').map(r => r.display).join('\n');
+  const txt = results.filter(r => r.status === 'missing')
+    .map(r => r.display + (r.need && r.need.length ? ` (needs ${r.need.join(', ')})` : '')).join('\n');
   try { await navigator.clipboard.writeText(txt); $('msg').textContent = 'Copied the names with no letter.'; }
   catch { $('msg').textContent = 'Copy failed. Names with no letter: ' + txt.replace(/\n/g, ', '); }
 });
